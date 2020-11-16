@@ -16,7 +16,10 @@ package raft
 
 import (
 	"errors"
-
+	"math/rand"
+	"math"
+	"time"
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -163,7 +166,22 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	var praft *Raft
+	praft = new(Raft)
+	praft.id = c.ID
+	praft.heartbeatTimeout = c.HeartbeatTick
+	praft.electionTimeout = c.ElectionTick
+	praft.State = StateFollower
+	praft.Term = 0
+	praft.votes = make(map[uint64]bool)
+	praft.Prs = make(map[uint64]*Progress)
+	for _, p := range c.peers {
+		praft.Prs[p] = new(Progress)
+		praft.votes[p] = false
+	}
+
+	praft.RaftLog = newLog(c.Storage)
+	return praft
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -181,22 +199,79 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	r.heartbeatElapsed += 1
+	r.electionElapsed += 1
+
+	d := r.electionElapsed - r.electionTimeout
+	seed := rand.NewSource(time.Now().UnixNano())
+	rint := rand.New(seed).Int() % r.electionTimeout
+
+	if r.State == StateFollower {
+		if d > rint {
+			r.electionElapsed = 0
+			fmt.Println("become candidate 1")
+			r.becomeCandidate()
+			r.Vote = r.id
+			r.votes[r.id] = true
+			for p, _ := range r.Prs {
+				if p != r.id {
+					r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVote, From: r.id, To: p, Term: r.Term})
+				}
+			}
+		}
+	} else if r.State == StateCandidate {
+		if d > rint {
+			r.electionElapsed = 0
+			r.Term += 1
+			r.votes[r.id] = true
+			r.readMessages() // clear message
+			for p, _ := range r.Prs {
+				if p != r.id {
+					r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVote, From: r.id, To: p, Term: r.Term})
+				}
+			}
+		}
+	} else if r.State == StateLeader {
+		for p, _ := range r.Prs {
+			if p != r.id {
+				r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgHeartbeat, From: r.id, To: p, Term: r.Term})
+			}
+		}
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.State = StateFollower
+	r.Lead = lead
+	if term > r.Term {
+		r.Term = term
+	}
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.Term += 1
+	r.State = StateCandidate
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.State = StateLeader
+}
+
+func (r *Raft) numOfVotes() uint64 {
+	var cnt uint64 = 0
+	for _, v  := range r.votes {
+		if v == true {
+			cnt += 1
+		}
+	}
+	return cnt
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -205,9 +280,73 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
+		if m.MsgType == pb.MessageType_MsgAppend {
+			if r.Term < m.Term {
+				r.Term = m.Term
+			}
+		} else if m.MsgType == pb.MessageType_MsgHup {
+			fmt.Println("become candidate 2:", r.id)
+			r.becomeCandidate()
+			r.Vote = r.id
+			r.votes[r.id] = true
+			for p, _ := range r.Prs {
+				if p != r.id {
+					fmt.Println("send message from: ", r.id, " to ", p)
+					r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVote, From: r.id, To: p, Term: r.Term})
+				}
+			}
+			if 2 * r.numOfVotes() > uint64(len(r.Prs)) {
+				fmt.Println("I got elected")
+				r.State = StateLeader
+			}
+		} else if m.MsgType == pb.MessageType_MsgRequestVote {
+			// Hasn't voted yet or vote the same node
+			var reject bool
+			var lastTerm uint64 = 0
+
+			lastIndex := r.RaftLog.LastIndex()
+			if lastIndex != math.MaxUint64 {
+				lastTerm, _ = r.RaftLog.Term(lastIndex)
+			}
+
+			if lastTerm > m.LogTerm {
+				fmt.Println("reject 1")
+				reject = true
+			} else if lastTerm == m.LogTerm && lastIndex > m.Index {
+				fmt.Println("reject 2")
+				reject = true
+			} else if r.Vote == None || r.Vote == m.From {
+				reject = false
+				r.Vote = m.From
+			} else {
+				reject = false
+				r.Vote = m.From
+			}
+			r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: reject})
+		}
 	case StateCandidate:
+		if m.MsgType == pb.MessageType_MsgAppend {
+			if r.Term <= m.Term {
+				r.Term = m.Term
+				r.State = StateFollower
+			}
+		} else if m.MsgType == pb.MessageType_MsgRequestVoteResponse {
+			if m.To == r.id && m.Reject == false {
+				r.votes[m.From] = true
+			}
+			if 2 * r.numOfVotes() > uint64(len(r.Prs)) {
+				fmt.Println("I got elected 2")
+				r.State = StateLeader
+			}
+		}
 	case StateLeader:
-	}
+		if m.MsgType == pb.MessageType_MsgAppend {
+			if r.Term < m.Term {
+				r.Term = m.Term
+				r.State = StateFollower
+			}
+		}
+	} // end of switch
 	return nil
 }
 

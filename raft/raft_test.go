@@ -1570,6 +1570,8 @@ func (nw *network) send(msgs ...pb.Message) {
 	for len(msgs) > 0 {
 		m := msgs[0]
 		p := nw.peers[m.To]
+		fmt.Println("send msg id is ", m.To)
+		fmt.Println("msg is:", m)
 		p.Step(m)
 		msgs = append(msgs[1:], nw.filter(p.readMessages())...)
 	}

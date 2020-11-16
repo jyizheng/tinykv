@@ -15,7 +15,7 @@
 package raft
 
 import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-
+import "math"
 // RaftLog manage the log entries, its struct look like:
 //
 //  snapshot/first.....applied....committed....stabled.....last
@@ -56,7 +56,9 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	return &RaftLog {
+		storage : storage,
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -81,11 +83,32 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	li, err := l.storage.LastIndex()
+	if err == nil {
+		return li
+	} else {
+		return math.MaxUint64
+	}
+}
+
+// FirstIndex return the first index of the log entries
+func (l *RaftLog) FirstIndex() uint64 {
+	// Your Code Here (2A).
+	li, err := l.storage.FirstIndex()
+	if err == nil {
+		return li
+	} else {
+		return math.MaxUint64
+	}
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	t, err := l.storage.Term(i)
+	if err != nil {
+		return 0, err
+	} else {
+		return t, nil
+	}
 }
