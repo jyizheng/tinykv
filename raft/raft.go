@@ -19,7 +19,7 @@ import (
 	"math/rand"
 	"math"
 	"time"
-	"fmt"
+	//"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -209,7 +209,6 @@ func (r *Raft) tick() {
 	if r.State == StateFollower {
 		if d > rint {
 			r.electionElapsed = 0
-			fmt.Println("become candidate 1")
 			r.becomeCandidate()
 			r.Vote = r.id
 			r.votes[r.id] = true
@@ -285,19 +284,17 @@ func (r *Raft) Step(m pb.Message) error {
 				r.Term = m.Term
 			}
 		} else if m.MsgType == pb.MessageType_MsgHup {
-			fmt.Println("become candidate 2:", r.id)
 			r.becomeCandidate()
 			r.Vote = r.id
 			r.votes[r.id] = true
 			for p, _ := range r.Prs {
 				if p != r.id {
-					fmt.Println("send message from: ", r.id, " to ", p)
 					r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVote, From: r.id, To: p, Term: r.Term})
 				}
 			}
 			if 2 * r.numOfVotes() > uint64(len(r.Prs)) {
-				fmt.Println("I got elected")
 				r.State = StateLeader
+				r.Vote = None
 			}
 		} else if m.MsgType == pb.MessageType_MsgRequestVote {
 			// Hasn't voted yet or vote the same node
@@ -310,18 +307,24 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 
 			if lastTerm > m.LogTerm {
-				fmt.Println("reject 1")
 				reject = true
 			} else if lastTerm == m.LogTerm && lastIndex > m.Index {
-				fmt.Println("reject 2")
 				reject = true
-			} else if r.Vote == None || r.Vote == m.From {
-				reject = false
-				r.Vote = m.From
+			} else if r.Vote != None {
+				if r.Vote == m.From {
+					reject = false
+				} else {
+					reject = true
+				}
 			} else {
 				reject = false
 				r.Vote = m.From
 			}
+
+			if reject == false && r.Term < m.Term {
+				r.Term = m.Term
+			}
+
 			r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: reject})
 		}
 	case StateCandidate:
@@ -335,9 +338,41 @@ func (r *Raft) Step(m pb.Message) error {
 				r.votes[m.From] = true
 			}
 			if 2 * r.numOfVotes() > uint64(len(r.Prs)) {
-				fmt.Println("I got elected 2")
 				r.State = StateLeader
+				r.Vote = None
 			}
+		} else if m.MsgType == pb.MessageType_MsgRequestVote {
+			// Hasn't voted yet or vote the same node
+			var reject bool
+			var lastTerm uint64 = 0
+
+			lastIndex := r.RaftLog.LastIndex()
+			if lastIndex != math.MaxUint64 {
+				lastTerm, _ = r.RaftLog.Term(lastIndex)
+			}
+
+			if lastTerm > m.LogTerm {
+				reject = true
+			} else if lastTerm == m.LogTerm && lastIndex > m.Index {
+				reject = true
+			} else if r.Vote != None {
+				if r.Vote == m.From {
+					reject = false
+				} else {
+					reject = true
+				}
+			} else {
+				reject = false
+				r.Vote = m.From
+			}
+
+			if reject == false {
+				if r.Term < m.Term {
+					r.Term = m.Term
+				}
+				r.State = StateFollower
+			}
+			r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: reject})
 		}
 	case StateLeader:
 		if m.MsgType == pb.MessageType_MsgAppend {
@@ -345,6 +380,38 @@ func (r *Raft) Step(m pb.Message) error {
 				r.Term = m.Term
 				r.State = StateFollower
 			}
+		} else if m.MsgType == pb.MessageType_MsgRequestVote {
+			// Hasn't voted yet or vote the same node
+			var reject bool
+			var lastTerm uint64 = 0
+
+			lastIndex := r.RaftLog.LastIndex()
+			if lastIndex != math.MaxUint64 {
+				lastTerm, _ = r.RaftLog.Term(lastIndex)
+			}
+
+			if lastTerm > m.LogTerm {
+				reject = true
+			} else if lastTerm == m.LogTerm && lastIndex > m.Index {
+				reject = true
+			} else if r.Vote != None {
+				if r.Vote == m.From {
+					reject = false
+				} else {
+					reject = true
+				}
+			} else {
+				reject = false
+				r.Vote = m.From
+			}
+
+			if reject == false {
+				if r.Term < m.Term {
+					r.Term = m.Term
+				}
+				r.State = StateFollower
+			}
+			r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVoteResponse, From: r.id, To: m.From, Term: r.Term, Reject: reject})
 		}
 	} // end of switch
 	return nil
