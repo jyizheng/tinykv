@@ -768,7 +768,7 @@ func testCandidateResetTerm(t *testing.T, mt pb.MessageType) {
 	nt.send(pb.Message{From: 1, To: 3, Term: a.Term, MsgType: mt})
 
 	if c.State != StateFollower {
-		t.Errorf("state = %s, want %s", c.State, StateFollower)
+		t.Errorf("state = %s, want %s, id %d", c.State, StateFollower, c.id)
 	}
 
 	// follower c term is reset with leader's

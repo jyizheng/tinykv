@@ -341,6 +341,24 @@ func (r *Raft) Step(m pb.Message) error {
 				r.State = StateLeader
 				r.Vote = None
 			}
+		} else if m.MsgType == pb.MessageType_MsgHup {
+			r.Term += 1
+			r.Vote = r.id
+			r.votes[r.id] = true
+			for p, _ := range r.Prs {
+				if p != r.id {
+					r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgRequestVote, From: r.id, To: p, Term: r.Term})
+				}
+			}
+			if 2 * r.numOfVotes() > uint64(len(r.Prs)) {
+				r.State = StateLeader
+				r.Vote = None
+			}
+		} else if m.MsgType == pb.MessageType_MsgHeartbeat {
+			if r.Term < m.Term {
+				r.Term = m.Term
+				r.State = StateFollower
+			}
 		} else if m.MsgType == pb.MessageType_MsgRequestVote {
 			// Hasn't voted yet or vote the same node
 			var reject bool
@@ -356,7 +374,11 @@ func (r *Raft) Step(m pb.Message) error {
 			} else if lastTerm == m.LogTerm && lastIndex > m.Index {
 				reject = true
 			} else if r.Vote != None {
-				if r.Vote == m.From {
+				if r.Term < m.Term {
+					r.Term = m.Term
+					reject = false
+					r.Vote = m.From
+				} else if r.Vote == m.From {
 					reject = false
 				} else {
 					reject = true
@@ -379,6 +401,12 @@ func (r *Raft) Step(m pb.Message) error {
 			if r.Term < m.Term {
 				r.Term = m.Term
 				r.State = StateFollower
+			}
+		} else if m.MsgType == pb.MessageType_MsgBeat {
+			for p, _ := range r.Prs {
+				if p != r.id {
+					r.msgs = append(r.msgs, pb.Message{MsgType: pb.MessageType_MsgHeartbeat, From: r.id, To: p, Term: r.Term})
+				}
 			}
 		} else if m.MsgType == pb.MessageType_MsgRequestVote {
 			// Hasn't voted yet or vote the same node
